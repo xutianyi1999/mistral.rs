@@ -559,7 +559,7 @@ pub trait Pipeline:
                 let mut logits = vec![None; input_seqs.len()];
                 let mut raw_out_logits = vec![vec![None; len_inputs]; input_seqs.len()];
 
-                let chunks = input_seqs.chunks_mut(input_seqs.len() / 5)
+                let chunks = input_seqs.chunks_mut(std::cmp::max(input_seqs.len() / 5, 1))
                     .map(|input_seqs| {
                         let inputs_iter = self.get_processor().inputs_processor().process_inputs(
                             self.tokenizer(),
