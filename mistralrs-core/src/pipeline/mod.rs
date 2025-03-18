@@ -586,6 +586,7 @@ pub trait Pipeline:
                         let inputs: Box<ModelInputs> = inputs.downcast().expect("Downcast failed.");
 
                         s.spawn(move || {
+                            println!("spawn {}", i);
                             let this = unsafe {
                                 #[allow(invalid_reference_casting)]
                                 &mut *(this as *const Self as *mut Self)
