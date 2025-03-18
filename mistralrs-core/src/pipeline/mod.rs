@@ -60,6 +60,8 @@ pub use vision::{VisionLoader, VisionLoaderBuilder, VisionSpecificConfig};
 use anyhow::Result;
 use as_any::AsAny;
 use candle_core::{DType, Device, IndexOp, Tensor, Var};
+use rayon::prelude::{IntoParallelIterator, ParallelSliceMut};
+use rayon::iter::ParallelIterator;
 use crate::pipeline::text_models_inputs_processor::ModelInputs;
 use crate::sequence::Sequence;
 
@@ -542,22 +544,7 @@ pub trait Pipeline:
                         blocks_to_copy.clone(),
                     )?;
 
-                let inputs_iter = self.get_processor().inputs_processor().process_inputs(
-                    self.tokenizer(),
-                    input_seqs,
-                    is_prompt,
-                    self.get_metadata().is_xlora,
-                    &self.device(),
-                    self.get_metadata().no_kv_cache,
-                    None,
-                    return_raw_logits,
-                    self.get_input_processor_config(),
-                    Some(metadata),
-                    self.get_metadata().prompt_chunksize,
-                    self.device_mapper(),
-                );
-
-                let mut logits: Vec<Option<ForwardInputsResult>> = vec![None; input_seqs.len()];
+                let start = Instant::now();
                 let prompt_chunksize = self
                     .get_metadata()
                     .prompt_chunksize
@@ -568,57 +555,79 @@ pub trait Pipeline:
                     .map(|seq| seq.get_toks().len().div_ceil(prompt_chunksize))
                     .max()
                     .unwrap();
+
+                let mut logits = vec![None; input_seqs.len()];
                 let mut raw_out_logits = vec![vec![None; len_inputs]; input_seqs.len()];
 
-                let mut exec_duration = Duration::ZERO;
+                let chunks = input_seqs.chunks_mut(input_seqs.len() / 5)
+                    .map(|input_seqs| {
+                        let inputs_iter = self.get_processor().inputs_processor().process_inputs(
+                            self.tokenizer(),
+                            input_seqs,
+                            is_prompt,
+                            self.get_metadata().is_xlora,
+                            &self.device(),
+                            self.get_metadata().no_kv_cache,
+                            None,
+                            return_raw_logits,
+                            self.get_input_processor_config(),
+                            {
+                                Some(PagedAttentionMeta {
+                                    sliding_window: metadata.sliding_window,
+                                    block_size: metadata.block_size,
+                                    block_engine: metadata.block_engine,
+                                })
+                            },
+                            self.get_metadata().prompt_chunksize,
+                            self.device_mapper(),
+                        );
+
+                        let inputs = inputs_iter.into_iter().map(|res| {
+                            let InputProcessorOutput {
+                                inputs,
+                                seq_indices,
+                            } = res.unwrap();
+                            let inputs: Box<ModelInputs> = inputs.downcast().expect("Downcast failed.");
+                            (inputs, seq_indices)
+                        }).collect::<Vec<_>>();
+                        (input_seqs.len(), inputs)
+                    })
+                    .collect::<Vec<_>>();
 
                 let this = &*self;
 
-                std::thread::scope(|s| {
-                    let raw_out_logits = (&mut raw_out_logits) as *mut Vec<Vec<Option<Tensor>>>  as usize;
-                    let logits = (&mut logits) as *mut Vec<Option<ForwardInputsResult>>  as usize;
+                let out = chunks.into_par_iter()
+                    .map(|(input_seqs_len, inputs)| {
+                        let this = unsafe {
+                            #[allow(invalid_reference_casting)]
+                            &mut *(this as *const Self as *mut Self)
+                        };
 
-                    for (i, inputs) in inputs_iter.into_iter().enumerate() {
-                        let InputProcessorOutput {
-                            inputs,
-                            seq_indices,
-                        } = inputs.map_err(candle_core::Error::msg).unwrap();
-                        let inputs: Box<ModelInputs> = inputs.downcast().expect("Downcast failed.");
+                        let mut logits = vec![None; input_seqs_len];
+                        let mut raw_out_logits = vec![vec![None; len_inputs]; input_seqs_len];
 
-                        s.spawn(move || {
-                            println!("spawn {}", i);
-                            let this = unsafe {
-                                #[allow(invalid_reference_casting)]
-                                &mut *(this as *const Self as *mut Self)
-                            };
-
-                            let raw_out_logits = unsafe {
-                                &mut *(raw_out_logits as *mut Vec<Vec<Option<Tensor>>>)
-                            };
-
-                            let logits = unsafe {
-                                &mut *(logits as *mut Vec<Option<ForwardInputsResult>>)
-                            };
-
-                            let start = Instant::now();
-                            let raw_logits = this.forward_inputs(inputs, return_raw_logits).unwrap();
-                            let end = Instant::now();
-                            exec_duration += end.duration_since(start);
+                        for (i, (inputs, seq_indices)) in inputs.into_iter().enumerate() {
+                            let raw_logits = this.forward_inputs(inputs, return_raw_logits)?;
 
                             for (logit_idx, seq_idx) in seq_indices.into_iter().enumerate() {
                                 if let ForwardInputsResult::RawLogits { logits } = &raw_logits {
                                     raw_out_logits[seq_idx][i] =
-                                        Some(logits.i(logit_idx).unwrap().to_device(&Device::Cpu).unwrap());
+                                        Some(logits.i(logit_idx)?.to_device(&Device::Cpu)?);
                                 } else {
-                                    logits[seq_idx] = Some(raw_logits.index_bs(logit_idx).unwrap());
+                                    logits[seq_idx] = Some(raw_logits.index_bs(logit_idx)?);
                                 }
                             }
-                        });
-                    }
-                });
+                        }
+                        std::result::Result::<_, candle_core::Error>::Ok((logits, raw_out_logits))
+                    })
+                    .collect::<Result<Vec<_>, candle_core::Error>>()?;
+
+                for (mut logits_part, mut raw_out_logits_part) in out {
+                    logits.append(&mut logits_part);
+                    raw_out_logits.append(&mut raw_out_logits_part);
+                }
 
                 if raw_out_logits[0][0].is_some() {
-                    let start = Instant::now();
                     response::send_raw_responses(
                         input_seqs,
                         raw_out_logits
@@ -627,10 +636,8 @@ pub trait Pipeline:
                             .collect(),
                     )
                     .await?;
-                    let end = Instant::now();
-                    exec_duration += end.duration_since(start);
 
-                    return Ok(exec_duration);
+                    return Ok(start.elapsed());
                 }
 
                 let logits = logits
@@ -641,7 +648,6 @@ pub trait Pipeline:
                     })
                     .collect::<candle_core::Result<Vec<_>>>()?;
 
-                let start = Instant::now();
                 match &logits[0] {
                     ForwardInputsResult::RawLogits { .. } => unreachable!(),
                     ForwardInputsResult::CausalGeneration { .. } => {
@@ -687,10 +693,8 @@ pub trait Pipeline:
                         .await?;
                     }
                 }
-                let end = Instant::now();
-                exec_duration += end.duration_since(start);
 
-                Ok(exec_duration)
+                Ok(start.elapsed())
             }
         }
     }
