@@ -575,8 +575,8 @@ pub trait Pipeline:
                 let this = &*self;
 
                 std::thread::scope(|s| {
-                    let raw_out_logits = raw_out_logits.as_mut_ptr() as usize;
-                    let logits = logits.as_mut_ptr() as usize;
+                    let raw_out_logits = (&mut raw_out_logits) as *mut Vec<Vec<Option<Tensor>>>  as usize;
+                    let logits = (&mut logits) as *mut Vec<Option<ForwardInputsResult>>  as usize;
 
                     for (i, inputs) in inputs_iter.into_iter().enumerate() {
                         let InputProcessorOutput {
