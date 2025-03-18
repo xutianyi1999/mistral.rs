@@ -573,9 +573,11 @@ pub trait Pipeline:
                 let mut exec_duration = Duration::ZERO;
 
                 let this = &*self;
-                let raw_out_logits = raw_out_logits.as_mut_ptr() as usize;
-                let logits = logits.as_mut_ptr() as usize;
+
                 std::thread::scope(|s| {
+                    let raw_out_logits = raw_out_logits.as_mut_ptr() as usize;
+                    let logits = logits.as_mut_ptr() as usize;
+
                     for (i, inputs) in inputs_iter.into_iter().enumerate() {
                         let InputProcessorOutput {
                             inputs,
