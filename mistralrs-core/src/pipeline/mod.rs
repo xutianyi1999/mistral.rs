@@ -559,7 +559,7 @@ pub trait Pipeline:
                 let mut logits = vec![];
                 let mut raw_out_logits = vec![];
 
-                let chunks = input_seqs.chunks_mut(std::cmp::max(input_seqs.len() / 5, 1))
+                let chunks = input_seqs.chunks_mut(std::cmp::max(input_seqs.len() / 8, 1))
                     .map(|input_seqs| {
                         println!("seqs len {}", input_seqs.len());
 
