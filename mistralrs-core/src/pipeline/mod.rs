@@ -556,8 +556,8 @@ pub trait Pipeline:
                     .max()
                     .unwrap();
 
-                let mut logits = vec![None; input_seqs.len()];
-                let mut raw_out_logits = vec![vec![None; len_inputs]; input_seqs.len()];
+                let mut logits = vec![];
+                let mut raw_out_logits = vec![];
 
                 let chunks = input_seqs.chunks_mut(std::cmp::max(input_seqs.len() / 5, 1))
                     .map(|input_seqs| {
