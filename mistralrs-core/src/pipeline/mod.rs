@@ -561,6 +561,8 @@ pub trait Pipeline:
 
                 let chunks = input_seqs.chunks_mut(std::cmp::max(input_seqs.len() / 5, 1))
                     .map(|input_seqs| {
+                        println!("seqs len {}", input_seqs.len());
+
                         let inputs_iter = self.get_processor().inputs_processor().process_inputs(
                             self.tokenizer(),
                             input_seqs,
