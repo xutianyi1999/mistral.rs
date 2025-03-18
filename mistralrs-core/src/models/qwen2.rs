@@ -6,7 +6,8 @@ use mistralrs_quant::{
     ShardedVarBuilder,
 };
 use std::{collections::HashMap, sync::Arc};
-
+use std::sync::{LazyLock, Mutex};
+use tracing::info;
 use crate::{
     amoe::{AnyMoeBaseModelMixin, AnyMoeConfig, AnyMoeExpertType, MlpLayer, MoeMlp},
     attention::SdpaParams,
@@ -512,7 +513,26 @@ impl Model {
                 .map(|(_, meta)| meta.is_first_prompt_chunk)
                 .unwrap_or(true)
         });
+
+        static LOCKS: LazyLock<Vec<Mutex<()>>> = LazyLock::new(|| {
+            let mut locks = Vec::new();
+
+            for _ in 0..5 {
+                locks.push(Mutex::new(()));
+            }
+            locks
+        });
+
+        let mut guard;
+
         for (i, layer) in self.layers.iter().enumerate() {
+            if i % 13 == 0 {
+                if i != 0 {
+                    xs.device().synchronize()?;
+                }
+                guard = LOCKS[i / 13].lock().unwrap();
+            }
+
             xs = self.mapper.map(xs, i)?;
             xs = layer.forward(
                 &xs,

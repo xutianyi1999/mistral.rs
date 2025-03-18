@@ -58,8 +58,9 @@ use tokenizers::Tokenizer;
 pub use vision::{VisionLoader, VisionLoaderBuilder, VisionSpecificConfig};
 
 use anyhow::Result;
+use as_any::AsAny;
 use candle_core::{DType, Device, IndexOp, Tensor, Var};
-
+use crate::pipeline::text_models_inputs_processor::ModelInputs;
 use crate::sequence::Sequence;
 
 pub use self::cache_manager::{
@@ -556,7 +557,7 @@ pub trait Pipeline:
                     self.device_mapper(),
                 );
 
-                let mut logits = vec![None; input_seqs.len()];
+                let mut logits: Vec<Option<ForwardInputsResult>> = vec![None; input_seqs.len()];
                 let prompt_chunksize = self
                     .get_metadata()
                     .prompt_chunksize
@@ -570,26 +571,48 @@ pub trait Pipeline:
                 let mut raw_out_logits = vec![vec![None; len_inputs]; input_seqs.len()];
 
                 let mut exec_duration = Duration::ZERO;
-                for (i, inputs) in inputs_iter.into_iter().enumerate() {
-                    let InputProcessorOutput {
-                        inputs,
-                        seq_indices,
-                    } = inputs.map_err(candle_core::Error::msg)?;
 
-                    let start = Instant::now();
-                    let raw_logits = self.forward_inputs(inputs, return_raw_logits)?;
-                    let end = Instant::now();
-                    exec_duration += end.duration_since(start);
+                let this = &*self;
+                let raw_out_logits = raw_out_logits.as_mut_ptr() as usize;
+                let logits = logits.as_mut_ptr() as usize;
+                std::thread::scope(|s| {
+                    for (i, inputs) in inputs_iter.into_iter().enumerate() {
+                        let InputProcessorOutput {
+                            inputs,
+                            seq_indices,
+                        } = inputs.map_err(candle_core::Error::msg).unwrap();
+                        let inputs: Box<ModelInputs> = inputs.downcast().expect("Downcast failed.");
 
-                    for (logit_idx, seq_idx) in seq_indices.into_iter().enumerate() {
-                        if let ForwardInputsResult::RawLogits { logits } = &raw_logits {
-                            raw_out_logits[seq_idx][i] =
-                                Some(logits.i(logit_idx)?.to_device(&Device::Cpu)?);
-                        } else {
-                            logits[seq_idx] = Some(raw_logits.index_bs(logit_idx)?);
-                        }
+                        s.spawn(move || {
+                            let this = unsafe {
+                                #[allow(invalid_reference_casting)]
+                                &mut *(this as *const Self as *mut Self)
+                            };
+
+                            let raw_out_logits = unsafe {
+                                &mut *(raw_out_logits as *mut Vec<Vec<Option<Tensor>>>)
+                            };
+
+                            let logits = unsafe {
+                                &mut *(logits as *mut Vec<Option<ForwardInputsResult>>)
+                            };
+
+                            let start = Instant::now();
+                            let raw_logits = this.forward_inputs(inputs, return_raw_logits).unwrap();
+                            let end = Instant::now();
+                            exec_duration += end.duration_since(start);
+
+                            for (logit_idx, seq_idx) in seq_indices.into_iter().enumerate() {
+                                if let ForwardInputsResult::RawLogits { logits } = &raw_logits {
+                                    raw_out_logits[seq_idx][i] =
+                                        Some(logits.i(logit_idx).unwrap().to_device(&Device::Cpu).unwrap());
+                                } else {
+                                    logits[seq_idx] = Some(raw_logits.index_bs(logit_idx).unwrap());
+                                }
+                            }
+                        });
                     }
-                }
+                });
 
                 if raw_out_logits[0][0].is_some() {
                     let start = Instant::now();
