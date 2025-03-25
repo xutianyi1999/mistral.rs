@@ -3273,7 +3273,8 @@ impl DeviceMappedModelLoader for DeepSeekV3Loader {
                         0
                     };
                     let gate_weight = cfg.n_routed_experts.unwrap() * cfg.hidden_size;
-                    sum += gate_proj + up_proj + down_proj + shared_experts + gate_weight;
+                    sum += shared_experts + gate_weight;
+                    // sum += gate_proj + up_proj + down_proj + shared_experts + gate_weight;
                 } else {
                     let h_size = cfg.hidden_size;
                     let i_size = cfg.intermediate_size;
