@@ -601,7 +601,8 @@ impl Moe {
                 let vb_e = vb.pp("experts").pp(i);
                 experts.push(Some(Expert::new(
                     cfg,
-                    mapper.set_device(layer_idx, vb_e, loading_isq),
+                    // force cpu
+                    vb_e.set_device(Device::Cpu),
                     None,
                     Some(cfg.moe_intermediate_size),
                 )?));
