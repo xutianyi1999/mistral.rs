@@ -68,8 +68,8 @@ impl QuantMethod for BlockwiseFP8Linear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         // Dequantize matmul always.
         // TODO: add a specific kernel?
-        let weight = self.dequantize_w()?;
-        let lin = Linear::new(weight, self.bias.clone());
+        // let weight = self.dequantize_w()?;
+        let lin = Linear::new(self.weight.clone(), self.bias.clone());
         lin.forward(x)
     }
 
