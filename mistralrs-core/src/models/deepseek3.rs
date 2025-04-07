@@ -640,6 +640,8 @@ impl Moe {
     }
 
     fn moe_infer(&self, xs: &Tensor, topk_ids: &Tensor, topk_weight: &Tensor) -> Result<Tensor> {
+        let xs_device = xs.device();
+
         let mut y = xs.zeros_like()?;
         let counts = topk_ids
             .flatten_all()?
@@ -663,7 +665,7 @@ impl Moe {
 
             y = y.index_add(
                 idx,
-                &expert.forward(&xs.index_select(idx, 0)?)?.broadcast_mul(
+                &expert.forward(&xs.index_select(idx, 0)?.to_device(&Device::Cpu)?)?.to_device(xs_device)?.broadcast_mul(
                     &topk_weight
                         .index_select(idx, 0)?
                         .gather(&top.unsqueeze(1)?, 1)?
