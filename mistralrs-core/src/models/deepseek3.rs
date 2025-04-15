@@ -421,7 +421,7 @@ impl Expert {
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        println!("expert x shape: {}", xs.shape());
+        println!("expert x shape: {:?}", xs.shape());
 
         let original_dtype = xs.dtype();
         let mut xs = xs.clone();
