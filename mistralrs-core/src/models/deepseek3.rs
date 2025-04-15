@@ -421,6 +421,8 @@ impl Expert {
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        println!("expert x shape: {}", xs.shape());
+
         let original_dtype = xs.dtype();
         let mut xs = xs.clone();
         if let Some(t) = self.gate.quantized_act_type() {
