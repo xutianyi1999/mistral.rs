@@ -375,9 +375,12 @@ impl Attention {
 }
 
 struct Expert {
-    gate: Arc<dyn QuantMethod>,
-    up: Arc<dyn QuantMethod>,
-    down: Arc<dyn QuantMethod>,
+    gate_lowa: Arc<dyn QuantMethod>,
+    gate_lowb: Arc<dyn QuantMethod>,
+    up_lowa: Arc<dyn QuantMethod>,
+    up_lowb: Arc<dyn QuantMethod>,
+    down_lowa: Arc<dyn QuantMethod>,
+    down_lowb: Arc<dyn QuantMethod>,
     act: Activation,
 }
 
@@ -390,28 +393,51 @@ impl Expert {
     ) -> Result<Self> {
         let hidden_size = hidden_size.unwrap_or(cfg.hidden_size);
         let intermediate_size = intermediate_size.unwrap_or(cfg.intermediate_size);
+        // todo read from cfg file
+        let lorarank = 1274;
 
         Ok(Self {
-            gate: ReplicatedLayer::new(
-                hidden_size,
+            gate_lowa: ReplicatedLayer::new(
+                lorarank,
                 intermediate_size,
                 &cfg.quantization_config,
                 false,
-                vb.pp("gate_proj"),
+                vb.pp("gate_proj_lowa"),
             )?,
-            up: ReplicatedLayer::new(
+            gate_lowb: ReplicatedLayer::new(
                 hidden_size,
-                intermediate_size,
+                lorarank,
                 &cfg.quantization_config,
                 false,
-                vb.pp("up_proj"),
+                vb.pp("gate_proj_lowb"),
             )?,
-            down: ReplicatedLayer::new(
+            up_lowa: ReplicatedLayer::new(
+                lorarank,
                 intermediate_size,
+                &cfg.quantization_config,
+                false,
+                vb.pp("up_proj_lowa"),
+            )?,
+            up_lowb: ReplicatedLayer::new(
+                hidden_size,
+                lorarank,
+                &cfg.quantization_config,
+                false,
+                vb.pp("up_proj_lowb"),
+            )?,
+            down_lowa: ReplicatedLayer::new(
+                lorarank,
                 hidden_size,
                 &cfg.quantization_config,
                 false,
-                vb.pp("down_proj"),
+                vb.pp("down_proj_lowa"),
+            )?,
+            down_lowb: ReplicatedLayer::new(
+                intermediate_size,
+                lorarank,
+                &cfg.quantization_config,
+                false,
+                vb.pp("down_proj_lowb"),
             )?,
             act: cfg.hidden_act,
         })
@@ -420,17 +446,18 @@ impl Expert {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let original_dtype = xs.dtype();
         let mut xs = xs.clone();
-        if let Some(t) = self.gate.quantized_act_type() {
+        if let Some(t) = self.gate_lowa.quantized_act_type() {
             xs = xs.to_dtype(t)?;
         }
-        let lhs = self.gate.forward(&xs)?;
-        let rhs = self.up.forward(&xs)?;
-        let mut res = self.down.forward(&candle_nn::ops::mul_and_act(
+
+        let lhs = self.gate_lowa.forward(&self.gate_lowb.forward(&xs)?)?;
+        let rhs = self.up_lowa.forward(&self.up_lowb.forward(&xs)?)?;
+        let mut res = self.down_lowa.forward(&self.down_lowb.forward(&candle_nn::ops::mul_and_act(
             &lhs,
             &rhs,
             self.act.try_into()?,
-        )?)?;
-        if self.gate.quantized_act_type().is_some() {
+        )?)?)?;
+        if self.gate_lowa.quantized_act_type().is_some() {
             res = res.to_dtype(original_dtype)?;
         }
         Ok(res)
@@ -1028,9 +1055,12 @@ impl IsqModel for DeepSeekV3 {
                 }
                 MoeOrMlp::Moe(moe) => {
                     for mlp in moe.experts.iter_mut().filter_map(|e| e.as_mut()) {
-                        tensors.push((&mut mlp.gate, Some(i)));
-                        tensors.push((&mut mlp.up, Some(i)));
-                        tensors.push((&mut mlp.down, Some(i)));
+                        tensors.push((&mut mlp.gate_lowa, Some(i)));
+                        tensors.push((&mut mlp.gate_lowb, Some(i)));
+                        tensors.push((&mut mlp.up_lowa, Some(i)));
+                        tensors.push((&mut mlp.up_lowb, Some(i)));
+                        tensors.push((&mut mlp.down_lowa, Some(i)));
+                        tensors.push((&mut mlp.down_lowb, Some(i)));
                     }
                     if let Some(mlp) = &mut moe.shared_experts {
                         tensors.push((&mut mlp.gate, Some(i)));
@@ -1060,9 +1090,12 @@ impl IsqModel for DeepSeekV3 {
                 }
                 MoeOrMlp::Moe(moe) => {
                     for mlp in moe.experts.iter_mut().filter_map(|e| e.as_mut()) {
-                        tensors.push((&mut mlp.gate, Some(i)));
-                        tensors.push((&mut mlp.up, Some(i)));
-                        tensors.push((&mut mlp.down, Some(i)));
+                        tensors.push((&mut mlp.gate_lowa, Some(i)));
+                        tensors.push((&mut mlp.gate_lowb, Some(i)));
+                        tensors.push((&mut mlp.up_lowa, Some(i)));
+                        tensors.push((&mut mlp.up_lowb, Some(i)));
+                        tensors.push((&mut mlp.down_lowa, Some(i)));
+                        tensors.push((&mut mlp.down_lowb, Some(i)));
                     }
                     if let Some(mlp) = &mut moe.shared_experts {
                         tensors.push((&mut mlp.gate, Some(i)));
