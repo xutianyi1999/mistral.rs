@@ -32,6 +32,9 @@ use crate::{
 
 use std::collections::HashSet;
 use std::iter::FromIterator;
+use std::str::FromStr;
+use std::sync::LazyLock;
+
 serde_default_fn!(f64, routed_scaling_factor, 1.0);
 serde_default_fn!(TopkMethod, topk_method, TopkMethod::Greedy);
 serde_default_fn!(usize, moe_layer_freq, 1);
@@ -384,6 +387,11 @@ struct Expert {
     act: Activation,
 }
 
+static LORARANK: LazyLock<usize> = LazyLock::new(|| {
+    let s = std::env::var("LORARANK").unwrap();
+    usize::from_str(&s).unwrap()
+});
+
 impl Expert {
     fn new(
         cfg: &DeepSeekV3Config,
@@ -394,7 +402,7 @@ impl Expert {
         let hidden_size = hidden_size.unwrap_or(cfg.hidden_size);
         let intermediate_size = intermediate_size.unwrap_or(cfg.intermediate_size);
         // todo read from cfg file
-        let lorarank = 1274;
+        let lorarank = *LORARANK;
 
         Ok(Self {
             gate_lowa: ReplicatedLayer::new(
